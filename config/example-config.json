@@ -1,0 +1,22 @@
+[
+   
+    {   "container_name": "test-alpine",
+        "need_to_pause": false,
+        "volumes":[
+            {
+                "name":"to_sync_bind",
+                "path":"/home/andy/Dokumente/python/podman_backup/dev/src/to_sync_bind",
+                "type":"bind"
+            },
+            {
+                "name":"to_sync_bind2",
+                "path":"/home/andy/Dokumente/python/podman_backup/dev/src/to_sync_bind2",
+                "type":"bind"
+            },
+            {
+                "type":"volume",
+                "name":"test-vol"
+            }
+        ]
+    }
+]
