@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 from typing import List, Dict
+from datetime import datetime
+import time
 
 from custom_logger import Logger
 from dotenv import load_dotenv
@@ -21,8 +23,12 @@ class PodmanBackup:
         self.backup_image_name = config['backup']['image_name']
         self.backup_destination = config['backup']['destination']
         self.backup_destination_remote = config['backup']['destination_remote']
+        self.time_to_run = config['backup']['time_to_run']
         self.ssh_certs_folder = config['ssh']['certs_folder']
         socket_path = config['socket']['path']
+
+        self.running = True
+        self.backup_started = False
 
         pod_sock = PodmanSocket(socket_path)
         self.api = PodmanApi(podman_socket=pod_sock)
@@ -80,18 +86,18 @@ class PodmanBackup:
             )
 
         if volume_type == 'bind':
-            if restore:
-                if volume_path:
-                    path = Path(volume_path)
+            # if restore:
+            #     if volume_path:
+            #         path = Path(volume_path)
 
-                if not path.exists():
-                    logger.warning(f'Folder {self.backup_destination} does not exist.')
-                    try:
-                        path.mkdir(parents=True)
-                        logger.info(f'Created folder {self.backup_destination}.')
-                    except FileNotFoundError or OSError:
-                        logger.error(f'Could not create folder {self.backup_destination}!')
-                        logger.error('Restore failed')
+            #     if not path.exists():
+            #         logger.warning(f'Folder {self.backup_destination} does not exist.')
+            #         try:
+            #             path.mkdir(parents=True)
+            #             logger.info(f'Created folder {self.backup_destination}.')
+            #         except FileNotFoundError or OSError:
+            #             logger.error(f'Could not create folder {self.backup_destination}!')
+            #             logger.error('Restore failed')
 
             bind_mount_parameter.append(
                 {
@@ -155,8 +161,26 @@ class PodmanBackup:
             command[-1] = cmd_part_2
             command[-2] = cmd_part_1
 
+        for volume in bind_mount_parameter:
+            path_str = volume.get('Source')
+            if isinstance(path_str, str):
+                path = Path(path_str)
+                if not path.exists():
+                    if restore:
+                        logger.warning(f'Folder {path} does not exist.')
+                        try:
+                            path.mkdir(parents=True)
+                            logger.info(f'Created folder {path}.')
+                        except FileNotFoundError or OSError:
+                            logger.error(f'Could not create folder {path}!')
+                            logger.error('Restore failed')
+                    else:
+                        logger.error(f'Folder {path} does not exist.')
+                        logger.error(f'Skip sync of volume {volume_name}')
+                        return ''
+
         # Uncomment for test issues
-        # command = ['sleep','500']
+        # command = ['sleep', '500']
         # command = ['touch', '/volumes/to_sync_bind/test.txt']
 
         con = self.api.container_create(
@@ -170,7 +194,7 @@ class PodmanBackup:
         self.api.container_start(con)
         return con
 
-    def run(self) -> None:
+    def _backup_cycle(self) -> None:
         for container in self._container_config:
             container_name = container.get("container_name")
             container_need_to_pause = container.get('need_to_pause')
@@ -191,6 +215,33 @@ class PodmanBackup:
                 )
                 if container_need_to_pause:
                     self.api.container_unpause(container_name)
+
+    def run(self) -> None:
+        if self.restore or self.time_to_run == 'now':
+            logger.info('start container backup tool')
+            logger.info('start restore run')
+            self._backup_cycle()
+            logger.info(
+                'Remove restore flag in docker-compose for next start up')
+            quit()
+
+        logger.info('start container backup tool')
+        logger.info(f'next backup at {self.time_to_run}')
+        while self.running:
+            actual_time = datetime.now()
+            actual_time_hour_minute_str = (actual_time.strftime('%H:%M'))
+
+            if actual_time_hour_minute_str == self.time_to_run:
+                if not self.backup_started:
+                    self.backup_started = True
+                    self._backup_cycle()
+
+                    logger.info('backup done')
+                    logger.info(f'next backup at {self.time_to_run}')
+            else:
+                self.backup_started = False
+
+            time.sleep(5)
 
 
 if __name__ == '__main__':
