@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List, Dict
 from datetime import datetime
 import time
+import subprocess
 
 from custom_logger import Logger
 from dotenv import load_dotenv
@@ -20,9 +21,6 @@ class PodmanBackup:
     def __init__(self) -> None:
         self.restore = self._get_bool_from_string(config['backup']['restore'])
         self.backup_config_file_path = config['backup']['config_file_path']
-        self.backup_image_name = config['backup']['image_name']
-        self.backup_destination = config['backup']['destination']
-        self.backup_destination_remote = config['backup']['destination_remote']
         self.time_to_run = config['backup']['time_to_run']
         self.ssh_certs_folder = config['ssh']['certs_folder']
         socket_path = config['socket']['path']
@@ -32,8 +30,7 @@ class PodmanBackup:
 
         pod_sock = PodmanSocket(socket_path)
         self.api = PodmanApi(podman_socket=pod_sock)
-
-        self._initialisation_sequence()
+        self._container_config = self._read_volume_config_file(self.backup_config_file_path)
 
     def _get_bool_from_string(self, value: str) -> bool:
         bool_str_upper = value.upper()
@@ -45,113 +42,57 @@ class PodmanBackup:
 
     def _initialisation_sequence(self) -> None:
         self._container_config = self._read_volume_config_file(self.backup_config_file_path)
-        self._prepare_backup_image(self.backup_image_name)
 
     def _read_volume_config_file(self, path: str) -> List:
         with open(path, 'r') as file:
             data = file.read()
             return json.loads(data)
 
-    def _prepare_backup_image(self, image_name: str) -> None:
-        logger.info('Check if backup image exists')
-        backup_image_exists = self.api.image_exists(image_name)
-        if not backup_image_exists:
-            logger.info('Backup image does not exist. Start to build backup image')
-            self.api.image_build(
-                tag=self.backup_image_name,
-                dockerfile_path=config['backup']['image_build_source']
-            )
-
     def _backup_container(self, volumes: List, restore: bool = False) -> None:
         for volume in volumes:
-            backup_container_id = self._backup_volume(volume, restore)
-            if len(backup_container_id) > 0:
-                self.api.container_wait(backup_container_id)
+            self._backup_volume(volume, restore)
 
-    def _backup_volume(self, volume: Dict, restore: bool) -> str:
+    def _backup_volume(self, volume: Dict, restore: bool) -> None:
 
-        volumes_parameter: List[Dict] = []
-        bind_mount_parameter: List[Dict] = []
-
-        volume_type = volume.get('type')
         volume_name = volume.get('name')
-        volume_path = volume.get('path')
 
-        if volume_type == 'volume':
-            volumes_parameter.append(
-                {
-                    'Dest': f'/volumes/{volume_name}',
-                    'Name': volume_name
-                }
-            )
+        logger.info(f'Start Backup of volume {volume_name}')
 
-        if volume_type == 'bind':
-            # if restore:
-            #     if volume_path:
-            #         path = Path(volume_path)
+        volume_source_path = volume.get('backup_source')
+        volume_destination_path = volume.get('backup_destination')
+        volume_destination_remote = volume.get('remote_destination')
 
-            #     if not path.exists():
-            #         logger.warning(f'Folder {self.backup_destination} does not exist.')
-            #         try:
-            #             path.mkdir(parents=True)
-            #             logger.info(f'Created folder {self.backup_destination}.')
-            #         except FileNotFoundError or OSError:
-            #             logger.error(f'Could not create folder {self.backup_destination}!')
-            #             logger.error('Restore failed')
-
-            bind_mount_parameter.append(
-                {
-                    'Destination': f'/volumes/{volume_name}',
-                    'Source': volume_path,
-                    'Options': ['rbind']
-                }
-            )
-        if self.backup_destination_remote.upper() == 'FALSE':
-            path = Path(self.backup_destination)
-            if not path.exists():
-                logger.error('Could not run backup')
-                logger.error(f'Backup folder {self.backup_destination} does not exist!')
-                return ''
-
-            bind_mount_parameter.append(
-                {
-                    'Destination': '/destination/',
-                    'Source': self.backup_destination,
-                    'Options': ['rbind']
-                }
-            )
+        if volume_destination_remote:
 
             command = [
                 'rsync',
-                '-rlptD',
-                # '-av',
-                # '--numeric-ids',
-                '--delete',
-                '--chown=0:0',
-                f'/volumes/{volume_name}/',
-                f'/destination/{volume_name}/{volume_name}/'
-            ]
-        else:
-
-            bind_mount_parameter.append(
-                {
-                    'Destination': '/root/.ssh',
-                    'Source': self.ssh_certs_folder,
-                    'Options': ['rbind']
-                }
-            )
-
-            command = [
-                'rsync',
-                '-rlptD',
+                '-rlptDv',
                 # '-av',
                 # '--numeric-ids',
                 '--delete',
                 '--chown=0:0',
                 '-e',
                 'ssh',
-                f'/volumes/{volume_name}/',
-                f'{self.backup_destination}/{volume_name}/'
+                f'{volume_source_path}',
+                f'{volume_destination_path}'
+            ]
+        else:
+
+            if volume_destination_path and not Path(volume_destination_path).exists():
+                logger.error('Could not run backup')
+                logger.error(f'Backup folder {volume_destination_path} does not exist!')
+                return
+
+            command = [
+                'rsync',
+                '-rlptDv',
+                # '-av',
+                # '--numeric-ids',
+                '--delete',
+                '--chown=0:0',
+
+                f'{volume_source_path}',
+                f'{volume_destination_path}'
             ]
 
         # switch last two coment items when restore is set
@@ -161,38 +102,14 @@ class PodmanBackup:
             command[-1] = cmd_part_2
             command[-2] = cmd_part_1
 
-        for volume in bind_mount_parameter:
-            path_str = volume.get('Source')
-            if isinstance(path_str, str):
-                path = Path(path_str)
-                if not path.exists():
-                    if restore:
-                        logger.warning(f'Folder {path} does not exist.')
-                        try:
-                            path.mkdir(parents=True)
-                            logger.info(f'Created folder {path}.')
-                        except FileNotFoundError or OSError:
-                            logger.error(f'Could not create folder {path}!')
-                            logger.error('Restore failed')
-                    else:
-                        logger.error(f'Folder {path} does not exist.')
-                        logger.error(f'Skip sync of volume {volume_name}')
-                        return ''
+        result = subprocess.run(args=command, capture_output=True)
 
-        # Uncomment for test issues
-        # command = ['sleep', '500']
-        # command = ['touch', '/volumes/to_sync_bind/test.txt']
+        if result.returncode == 0:
+            logger.info(f'Finished Backup of volume {volume_name}')
+        else:
+            logger.error(f'Could not finish Backup of volume {volume_name}. {result.stderr.decode("utf-8")}')
 
-        con = self.api.container_create(
-            image=self.backup_image_name,
-            volumes=volumes_parameter,
-            mounts=bind_mount_parameter,
-            remove=True,
-            command=command,
-        )
-
-        self.api.container_start(con)
-        return con
+        return
 
     def _backup_cycle(self) -> None:
         for container in self._container_config:
