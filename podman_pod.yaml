@@ -1,0 +1,77 @@
+
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: "2021-09-29T20:44:22Z"
+  labels:
+    app: test-pod
+  name: test-pod
+spec:
+  containers:
+  - name: container-backup
+    image: localhost/podman-backup
+    command:
+      - python
+      - main.py
+    env:
+      - name: CONF_LOGGING_LOG_LEVEL
+        value: debug
+      - name: CONF_HTTP_CONNECTION_RETRY
+        value: 3
+      - name: CONF_SOCKET_PATH
+        value: /run/user/1000/podman/podman.sock
+      - name: CONF_BACKUP_CONFIG_FILE_PATH
+        value: /config/example-config.json
+      - name: CONF_BACKUP_RESTORE
+        value: false
+      - name: CONF_BACKUP_TIME_TO_RUN
+        value: "now"
+      - name: CONF_SSH_CERTS_FOLDER
+        value: /host/certs
+    resources: {}
+    securityContext:
+      allowPrivilegeEscalation: true
+      capabilities:
+        drop:
+        - CAP_MKNOD
+        - CAP_NET_RAW
+        - CAP_AUDIT_WRITE
+      privileged: false
+      readOnlyRootFilesystem: false
+      seLinuxOptions: {}
+    volumeMounts:
+      - name: container-backup-config
+        mountPath: /config/example-config.json
+      - name: container-backup-bind_mounts
+        mountPath: /bind_mounts/
+      - name: container-backup-certs
+        mountPath: /root/.ssh/
+      - name: container-backup-socket
+        mountPath: /run/user/1000/podman/podman.sock
+      - name: container-backup-test_vol
+        mountPath: /volumes/test-vol/
+    workingDir: /app
+  dnsConfig: {}
+  restartPolicy: Never
+  volumes:
+    - name: container-backup-bind_mounts
+      hostPath:
+        path: /home/andy/Dokumente/python/podman_backup/dev/src/
+        type: Directory
+    - name: container-backup-certs
+      hostPath:
+        path: /home/andy/Dokumente/python/podman_backup/dev/certs/
+        type: Directory
+    - name: container-backup-socket
+      hostPath:
+        path: /run/user/1000/podman/podman.sock
+        type: File
+    - name: container-backup-config
+      hostPath:
+        path: /home/andy/Dokumente/python/podman_backup/dev/config/example-config-container.json
+        type: File    
+    - name: container-backup-test_vol
+      persistentVolumeClaim:
+        claimName: test-vol
+status: {}
+
